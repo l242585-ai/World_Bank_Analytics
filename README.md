@@ -56,9 +56,9 @@ No PII is present in this dataset — all records are country-and-year level agg
 
 ## Team
 
-- [Name 1] — [Roll No.]
-- [Name 2] — [Roll No.]
+- Annushay Fatima — 24L-2585
+- Malik Ahmed Ayaz— 21L-5674
 
 ## Course
 
-[Course Name / Code] — Phase 1 Submission
+Data Analysis and Visualization— Phase 1 Submission
