@@ -32,3 +32,28 @@ This project ingests country-level development data from the World Bank API, pro
 - **Incremental Load**: Re-pull of the latest 1–2 reporting years to detect newly available records and revised (corrected) values — since World Bank data is periodically updated rather than streamed daily.
 
 ## Repository Structure
+
+## Medallion Architecture
+
+- **Bronze**: Raw JSON as returned by the API, one record per (country, indicator, year).
+- **Silver**: Cleansed data — flattened fields, cast types, standardized country codes, null handling, upsert logic for revised records.
+- **Gold**: Star schema (`dim_country`, `dim_indicator`, `fact_indicator_values`) with pre-aggregated tables for regional trends and year-over-year growth.
+
+## Security & Compliance
+
+No PII is present in this dataset — all records are country-and-year level aggregates published by national statistical agencies. No individual-level data exists at any stage of the pipeline.
+
+## Tech Stack
+
+- **Processing**: Apache Spark (Databricks Free Edition)
+- **Language**: Python / PySpark
+- **BI Tool**: Power BI
+
+## Team
+
+- [Name 1] — [Roll No.]
+- [Name 2] — [Roll No.]
+
+## Course
+
+[Course Name / Code] — Phase 1 Submission
