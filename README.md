@@ -32,7 +32,12 @@ This project ingests country-level development data from the World Bank API, pro
 - **Incremental Load**: Re-pull of the latest 1–2 reporting years to detect newly available records and revised (corrected) values — since World Bank data is periodically updated rather than streamed daily.
 
 ## Repository Structure
-
+World_Bank_Analytics/
+├── README.md
+├── full_load_sample.json # Sample of the full historical baseline load
+├── incremental_load_sample.json # Sample of the latest-year incremental load
+└── proposal/
+└── Phase1_Proposal.docx
 ## Medallion Architecture
 
 - **Bronze**: Raw JSON as returned by the API, one record per (country, indicator, year).
