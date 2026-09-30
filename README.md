@@ -39,10 +39,10 @@ The project uses **70 indicators** covering economy, health, education, environm
 | Metric | Full Load | Incremental Load |
 |---|---|---|
 | Scope | 70 indicators × ~217 countries × 65 years (1960–2024) | Same indicators, 2023–2024 |
-| Approx. records | ≈ 1,000,000 | ≈ 30,000 per pull |
-| Approx. size (raw JSON) | ≈ 230 MB (split into 3 files) | ≈ 6–8 MB per pull |
+| Approx. records | 907,225 | 33,352 per pull |
+| Approx. size (raw JSON) | 230.44 MB (split into 3 files) | 8.34 MB per pull |
 
-GitHub rejects files larger than 100 MB, so the full load is stored as **three part files** (~77 MB each). Each part is a valid JSON array, and together they form the complete baseline.
+GitHub rejects files larger than 100 MB, so the full load is stored as **three part files** (~74–79 MB each). Each part is a valid JSON array, and together they form the complete baseline.
 
 To recombine the parts:
 
