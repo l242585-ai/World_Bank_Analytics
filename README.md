@@ -14,20 +14,32 @@ This project ingests country-level development data from the World Bank API, pro
 
 ### Indicators Used
 
-70 indicators were requested from the API covering economy, health, education, environment, and connectivity; **69** of them returned data and are present in the raw files (the full list is in `indicators_70.json`). A selection of the key indicators is shown below.
+The dataset has **84 indicators** in two sets:
+
+1. **Base set (69 indicators).** 70 indicators were requested and 69 returned data (codes and names in `data/metadata/indicators_70.json`). They cover agriculture and land, aid flows, education attainment (Barro-Lee), electricity access and energy, and a few income and consumption series. The base set was picked from World Bank topic lists and did **not** contain the headline indicators (GDP, life expectancy, literacy). The only GDP-like series in it (`6.0.GDP_*`) cover about 22 countries for 2000–2014.
+2. **Core set (15 indicators).** Pulled in a second batch by `Ingestion/core_indicator_fetch.ipynb` (codes and names in `data/metadata/indicators_core.json`):
 
 | Indicator | Code |
 |---|---|
 | GDP (current US$) | `NY.GDP.MKTP.CD` |
-| GDP per capita | `NY.GDP.PCAP.CD` |
+| GDP per capita (current US$) | `NY.GDP.PCAP.CD` |
+| GDP growth (annual %) | `NY.GDP.MKTP.KD.ZG` |
 | Population, total | `SP.POP.TOTL` |
-| Poverty headcount ($2.15/day) | `SI.POV.DDAY` |
 | Life expectancy at birth | `SP.DYN.LE00.IN` |
-| Literacy rate | `SE.ADT.LITR.ZS` |
+| Literacy rate, adult total | `SE.ADT.LITR.ZS` |
+| Mortality rate, under-5 | `SH.DYN.MORT` |
 | Health expenditure (% GDP) | `SH.XPD.CHEX.GD.ZS` |
-| CO2 emissions per capita | `EN.ATM.CO2E.PC` |
+| School enrollment, primary | `SE.PRM.ENRR` |
+| School enrollment, secondary | `SE.SEC.ENRR` |
+| Internet users (% of population) | `IT.NET.USER.ZS` |
+| CO2 emissions per capita | `EN.GHG.CO2.PC.CE.AR5` |
+| Poverty headcount ($2.15/day) | `SI.POV.DDAY` |
 | Inflation (%) | `FP.CPI.TOTL.ZG` |
 | Unemployment (%) | `SL.UEM.TOTL.ZS` |
+
+`EN.ATM.CO2E.PC` returned no data and was replaced by `EN.GHG.CO2.PC.CE.AR5`.
+
+**Coverage differs by indicator.** Each core indicator has 17,290 country-year rows. GDP has 14,577 reported values (84%), life expectancy 17,191 (99%), and literacy only 2,804 (16%) because it comes from surveys, so Phase 3 should use the latest available literacy value per country.
 
 ## Ingestion Pattern
 
@@ -38,20 +50,21 @@ This project ingests country-level development data from the World Bank API, pro
 
 | Metric | Full Load | Incremental Load |
 |---|---|---|
-| Scope | 69 indicators × ~217 countries + regional aggregates × 65 years (1960–2024) | Same indicators, 2023–2024 |
-| Approx. records | 907,225 | 33,352 per pull |
-| Approx. size (raw JSON) | 230.44 MB (split into 3 files) | 8.34 MB per pull |
+| Base set (69 indicators) | 907,225 records, 230.44 MB (3 files) | 33,352 records, 8.34 MB |
+| Core set (15 indicators) | 259,350 records, 62.48 MB (1 file) | 7,980 records, 1.93 MB |
+| **Total** | **1,166,575 records, 292.92 MB** | **41,332 records, 10.27 MB** |
+| Years | 1960–2024 | 2023–2024 |
 
-GitHub rejects files larger than 100 MB, so the full load is stored as **three part files** (~74–79 MB each). Each part is a valid JSON array, and together they form the complete baseline.
+GitHub rejects files larger than 100 MB, so the base full load is stored as **three part files** (~74–79 MB each). Each part is a valid JSON array, and together they form the base baseline.
 
-To recombine the parts:
+To recombine the base parts:
 
 ```python
 import json
 
 full_load = []
 for i in (1, 2, 3):
-    with open(f"full_load_part{i}.json") as f:
+    with open(f"data/raw/full/full_load_part{i}.json") as f:
         full_load.extend(json.load(f))
 
 print(len(full_load), "records")
@@ -62,23 +75,36 @@ print(len(full_load), "records")
 ```
 World_Bank_Analytics/
 ├── README.md
-├── World bank pipeline.ipynb   # API extraction (full + incremental pulls) - Phase 1
-├── layers.ipynb                # Bronze & Silver schemas and transformations
-├── pipeline_utils.ipynb        # Table definitions, MERGE logic, quarantine, execution logging
-├── run_pipeline.ipynb          # Parameterized pipeline entry point (widgets)
-├── pipeline_tests.ipynb        # Idempotency / upsert / backfill / schema drift / logging tests
-├── full_load_part1.json        # Full historical load, part 1 of 3
-├── full_load_part2.json        # Full historical load, part 2 of 3
-├── full_load_part3.json        # Full historical load, part 3 of 3
-├── incremental_full.json       # Latest-years incremental load
-├── indicators_70.json          # Indicator codes and names
-├── test_data/
-│   ├── sample_baseline.json        # 34-record baseline used by the tests
-│   ├── sample_revisions.json       # revised / newly reported / new records
-│   └── sample_schema_drift.json    # new column, wrong types, missing fields
+├── Ingestion/
+│   ├── World bank pipeline.ipynb        # Phase 1: API extraction of the base set (full + incremental pulls)
+│   └── core_indicator_fetch.ipynb       # Pulls the 15 core indicators (run once)
+├── data/
+│   ├── raw/
+│   │   ├── full/
+│   │   │   ├── full_load_part1.json     # Base full load, part 1 of 3
+│   │   │   ├── full_load_part2.json     # Base full load, part 2 of 3
+│   │   │   ├── full_load_part3.json     # Base full load, part 3 of 3
+│   │   │   └── full_load_core.json      # Core indicators, full load
+│   │   └── incremental/
+│   │       ├── incremental_full.json    # Base set, latest years
+│   │       └── incremental_core.json    # Core indicators, latest years
+│   └── metadata/
+│       ├── indicators_70.json           # Base indicator codes and names
+│       └── indicators_core.json         # Core indicator codes and names
+├── Pipeline/                            # keep these four notebooks in the same folder (%run ./...)
+│   ├── layers.ipynb                     # Bronze & Silver schemas and transformations
+│   ├── pipeline_utils.ipynb             # Table definitions, MERGE logic, quarantine, execution logging
+│   ├── run_pipeline.ipynb               # Parameterized pipeline entry point (widgets)
+│   ├── pipeline_tests.ipynb             # Idempotency / upsert / backfill / schema drift / logging tests
+│   └── test_data/
+│       ├── sample_baseline.json         # 34-record baseline used by the tests
+│       ├── sample_revisions.json        # revised / newly reported / new records
+│       └── sample_schema_drift.json     # new column, wrong types, missing fields
 └── proposal/
     └── Phase1_Proposal.docx
 ```
+
+`Pipeline/` notebooks load each other with `%run ./layers` and `%run ./pipeline_utils`, and relative file paths are resolved from the notebook's own folder. This is why the raw data is referenced as `../data/raw/...`.
 
 ## Medallion Architecture
 
@@ -191,12 +217,12 @@ One row for every file or table processed, for every run, in every layer.
 | `source` | STRING | File (Raw → Bronze) or table + batch (Bronze → Silver) processed |
 | `start_time` / `end_time` | TIMESTAMP | Execution start and end |
 | `duration_seconds` | DOUBLE | Run time of the step |
-| `status` | STRING | `SUCCESS` or `FAILED` |
+| `status` | STRING | `SUCCESS` or `FAILED`. FAILED means an error occurred inside the step (the error text is in `message`). A run cancelled manually while a step is executing can leave a row with an empty status |
 | `rows_read` | BIGINT | Records read |
 | `rows_inserted` | BIGINT | Rows inserted by the MERGE |
 | `rows_updated` | BIGINT | Rows updated by the MERGE |
 | `rows_quarantined` | BIGINT | Rows sent to `quarantine_records` |
-| `message` | STRING | Error message, or notes (schema drift, revisions recorded) |
+| `message` | STRING | Error message on failure, or notes (schema drift, revisions recorded, quarantined rows). Null when a Raw → Bronze step finished without notes |
 | `load_timestamp` | TIMESTAMP | When the log row was written |
 
 ## Robustness
@@ -217,12 +243,12 @@ One row for every file or table processed, for every run, in every layer.
 
 ## Execution Guide
 
-Open **`run_pipeline.ipynb`**, set the widgets at the top and click **Run all**. The same names can be passed as job parameters when the notebook is run as a Databricks Job.
+Open **`Pipeline/run_pipeline.ipynb`**, set the widgets at the top and click **Run all**. The same names can be passed as job parameters when the notebook is run as a Databricks Job.
 
 | Widget | Default | Description |
 |---|---|---|
 | `load_type` | `incremental` | `full` or `incremental` |
-| `source_path` | *(empty)* | File, folder, wildcard or comma-separated list. Empty = `full_load_part*.json` (full) or `incremental_full.json` (incremental). Relative paths are resolved from the repo folder; absolute `/Workspace/...`, `/Volumes/...` and `dbfs:/...` paths also work |
+| `source_path` | *(empty)* | File, folder, wildcard or comma-separated list. Empty = every `.json` file in `data/raw/full` (full) or `data/raw/incremental` (incremental). Relative paths are resolved from the notebook's folder, so from `Pipeline/` they start with `../data/raw/`. Absolute `/Workspace/...`, `/Volumes/...` and `dbfs:/...` paths also work |
 | `batch_id` | *(empty)* | Empty = `full_load` (full) or `incremental_<YYYYMMDD>` (incremental). With `layer = silver`, selects which Bronze batch to process; `ALL` = every batch |
 | `layer` | `all` | `all` (Raw → Bronze → Silver), `bronze` (Raw → Bronze only) or `silver` (Bronze → Silver only) |
 | `catalog` | *(empty)* | Empty = current catalog |
@@ -234,7 +260,7 @@ Open **`run_pipeline.ipynb`**, set the widgets at the top and click **Run all**.
 |---|---|---|---|
 | `full` | *(empty)* | *(empty)* | `all` |
 
-Loads the three `full_load_part*.json` files into Bronze (batch `full_load`) and merges them into Silver.
+Loads every file in `data/raw/full` (the three base parts and `full_load_core.json`) into Bronze as batch `full_load` and merges them into Silver. Each file gets its own log row.
 
 ### 2. Standard incremental load (scheduled, e.g. weekly)
 
@@ -242,30 +268,31 @@ Loads the three `full_load_part*.json` files into Bronze (batch `full_load`) and
 |---|---|---|---|
 | `incremental` | *(empty)* | *(empty)* | `all` |
 
-Loads `incremental_full.json` as batch `incremental_<today>` and upserts it into Silver. New country-years are inserted, revised values are updated and recorded in `silver_indicator_revisions`.
+Loads every file in `data/raw/incremental` (`incremental_full.json` and `incremental_core.json`) as batch `incremental_<today>` and upserts it into Silver. New country-years are inserted, revised values are updated and recorded in `silver_indicator_revisions`. Keep only the current pull in that folder; move older incremental files elsewhere and load them as backfills.
 
 ### 3. Backfill a historical batch (Raw → Bronze → Silver)
 
-Point the pipeline at the old raw file(s) and give the batch the date it belongs to:
+Point the pipeline at one raw file or folder and give the batch its own id:
 
 | load_type | source_path | batch_id | layer |
 |---|---|---|---|
-| `incremental` | `backfill/incremental_2026-09-01.json` | `incremental_20260901` | `all` |
+| `incremental` | `../data/raw/incremental/incremental_core.json` | `incremental_core` | `all` |
 
-`source_path` can also be a folder (`backfill/`) or a pattern (`backfill/incremental_2026-09-*.json`).
+`source_path` can also be a folder or a pattern (for example `../data/raw/full/full_load_part*.json`). For an older period, use the same pattern with that period's file and a batch id that names it (for example `incremental_20251231`). A backfill never overwrites newer values already in Silver.
 
 ### 4. Re-process Bronze → Silver only
 
 | Purpose | load_type | batch_id | layer |
 |---|---|---|---|
-| Re-run one batch from Bronze | `incremental` | `incremental_20260901` | `silver` |
+| Re-run one batch from Bronze | `incremental` | `incremental_<YYYYMMDD>` | `silver` |
+| Re-run the full-load batch (base and core files) from Bronze | `full` | `full_load` | `silver` |
 | Rebuild Silver from every Bronze batch | `full` | `ALL` | `silver` |
 
 Because Silver is loaded with a guarded MERGE, any of these can be run as many times as needed without creating duplicates.
 
 ### 5. Tests
 
-Run **`pipeline_tests.ipynb`**. Part A runs the pipeline on `test_data/` in a separate schema (`world_bank_test`) and checks idempotency, upserts, backfill, schema drift, quarantine and failure logging. Part B runs read-only checks on the real tables. The last cell fails if any check fails.
+Run **`Pipeline/pipeline_tests.ipynb`**. Part A runs the pipeline on `Pipeline/test_data/` in a separate schema (`world_bank_test`) and checks idempotency, upserts, backfill, schema drift, quarantine and failure logging. Part B runs read-only checks on the real tables. The last cell fails if any check fails.
 
 ### Checking the logs
 
@@ -275,6 +302,21 @@ SELECT run_id, layer, source, status, rows_read, rows_inserted, rows_updated,
 FROM workspace.world_bank.pipeline_execution_logs
 ORDER BY start_time DESC;
 ```
+
+## Validation
+
+- Raw files reconciled with the documented volumes: base set 907,225 full-load and 33,352 incremental records, core set 259,350 and 7,980 (totals 1,166,575 and 41,332).
+- After both full loads Silver holds 1,166,575 rows (520,215 with a reported value, 646,360 without).
+- Re-running the same load inserts 0 rows and updates 0 rows. The real incremental files contain the same values as the full loads for 2023–2024, so they also insert and update 0 rows in Silver; revisions, inserts and updates are demonstrated with `test_data/sample_revisions.json`.
+- `pipeline_tests` passed 31 / 31 checks on Databricks.
+
+## Notes and Limitations
+
+- With the default `batch_id`, running the incremental load on a different day creates a new Bronze batch (`incremental_<date>`). Silver is not affected. To re-run the same batch, pass the same `batch_id`.
+- Bronze keeps one copy of a record per batch. If the same raw file is loaded under two batch ids, it appears twice in Bronze; Silver is not affected because its key is `(country_key, indicator_code, year)`.
+- Schema drift handling relies on the Databricks `rescuedDataColumn` option. New source columns are preserved in `_rescued_data` rather than added as table columns. To promote a new column, add it to `bronze_schema`; the Bronze MERGE then evolves the table.
+- Primary keys on Silver and the log table are informational constraints (Unity Catalog). Uniqueness is enforced by the MERGE logic.
+- The execution log is an audit trail and is never cleaned. It can contain earlier test runs that FAILED or were cancelled; those committed no data.
 
 ---
 
