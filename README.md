@@ -4,7 +4,30 @@ An end-to-end data pipeline project analyzing global socio-economic development 
 
 ## Project Overview
 
-This project ingests country-level development data from the World Bank API, processes it through Bronze, Silver, and Gold layers, and culminates in a business intelligence dashboard analyzing global development trends.
+This project ingests country-level development data from the World Bank API, processes it through Bronze, Silver, and Gold layers, and culminates in a Power BI dashboard analyzing global development trends. The design, operation, Spark execution analysis and cost evaluation are written up in the Final Architecture and FinOps Report (`proposal/`).
+
+| Item | Value |
+|---|---|
+| Source | World Bank Open Data API v2 (public, no authentication) |
+| Indicators | 84 (69 base + 15 core) |
+| Coverage | 1960–2024; 298 country keys in Silver, conformed to 280 countries and aggregates in Gold (224 countries, 56 aggregates) |
+| Full load | 1,166,575 records, 292.92 MB of raw JSON (4 files) |
+| Incremental load | 41,332 records, 10.27 MB (2023–2024, 2 files) |
+| Silver | 1,166,575 rows, one per country, indicator and year |
+| Gold | 3 dimensions (280 countries and aggregates, 84 indicators, 65 years), 1 fact table (1,166,575 rows), 3 aggregate tables |
+| Operational tables | `pipeline_execution_logs`, `quarantine_records`, `silver_indicator_revisions` |
+| Dashboard | Power BI report on the Gold tables (see [Business Intelligence Dashboard](#business-intelligence-dashboard)) |
+| Platform | Databricks Free Edition (serverless compute), Delta Lake, Unity Catalog, GitHub |
+
+**What the pipeline guarantees.** Running the same input twice leaves Silver and Gold unchanged (0 rows inserted, 0 updated). A new incremental file flows from Raw to Gold in a single run. Records that do not fit the schema are quarantined and the rest of the batch finishes. Every step writes its layer, source, start and end time, status and row counts to the execution log.
+
+## Project Phases
+
+| Phase | Deliverable | Outcome |
+|---|---|---|
+| 1 | Proposal: domain, source, full and incremental load, sample files, volume, PII, Medallion plan, dashboard plan | Accepted. On the instructor's feedback the full load was enlarged from a small sample to 70 indicators over 1960–2024 (907,225 records, 230.44 MB, three files) |
+| 2 | Bronze and Silver with PySpark: explicit schemas, MERGE upserts, parameterized backfills, schema drift handling, execution logging | 31 of 31 tests passed on Databricks. The first 69 indicators had no GDP, life expectancy or literacy, so 15 core indicators were added through the normal parameters: 84 indicators, 1,166,575 records, 292.92 MB |
+| 3 | Gold star schema, pipeline integration, Power BI dashboard, final report | Gold layer refreshed automatically at the end of every run and logged as `silver_to_gold`; Power BI dashboard built on the Gold tables |
 
 ## Data Source
 
@@ -85,13 +108,13 @@ World_Bank_Analytics/
 │   │   │   ├── full_load_part2.json     # Base full load, part 2 of 3
 │   │   │   ├── full_load_part3.json     # Base full load, part 3 of 3
 │   │   │   └── full_load_core.json      # Core indicators, full load
-│   │   └── incremental/
-│   │       ├── incremental_full.json    # Base set, latest years
-│   │       └── incremental_core.json    # Core indicators, latest years
-│       └── Metadata/
-│           ├── indicators_70.json       # Base indicator codes and names
-│           ├── indicators_core.json     # Core indicator codes and names
-│           └── countries_metadata.json  # World Bank country list (region, income level, aggregates), used by Gold
+│   │   ├── incremental/
+│   │   │   ├── incremental_full.json    # Base set, latest years
+│   │   │   └── incremental_core.json    # Core indicators, latest years
+│   │   └── Metadata/
+│   │       ├── indicators_70.json       # Base indicator codes and names
+│   │       ├── indicators_core.json     # Core indicator codes and names
+│   │       └── countries_metadata.json  # World Bank country list (region, income level, aggregates), used by Gold
 ├── Pipeline/                            # keep these notebooks in the same folder (%run ./...)
 │   ├── bronze_silver layer.ipynb        # Bronze & Silver schemas and transformations
 │   ├── gold_layer.ipynb                 # Gold star schema transformations (dimensions, fact, aggregates)
@@ -103,7 +126,9 @@ World_Bank_Analytics/
 │       ├── sample_baseline.json         # 34-record baseline used by the tests
 │       ├── sample_revisions.json        # revised / newly reported / new records
 │       └── sample_schema_drift.json     # new column, wrong types, missing fields
-└── proposal/
+├── dashboard/
+│   └── World_bank_dashboard.pbix        # Power BI report (Import mode snapshot of the Gold tables)
+└── proposal/                            # Phase 1 proposal, Phase 2 report and the Final Architecture and FinOps Report
     └── Phase1_Proposal.docx
 ```
 
@@ -332,7 +357,10 @@ ORDER BY start_time DESC;
 - Raw files reconciled with the documented volumes: base set 907,225 full-load and 33,352 incremental records, core set 259,350 and 7,980 (totals 1,166,575 and 41,332).
 - After both full loads Silver holds 1,166,575 rows (520,215 with a reported value, 646,360 without).
 - Re-running the same load inserts 0 rows and updates 0 rows. The real incremental files contain the same values as the full loads for 2023–2024, so they also insert and update 0 rows in Silver; revisions, inserts and updates are demonstrated with `test_data/sample_revisions.json`.
-- `pipeline_tests` passed 31 / 31 checks on Databricks.
+- `pipeline_tests` passed 31 / 31 checks on Databricks (Phase 2 checks). The Gold checks were added to the same notebook in Phase 3.
+- Silver check for the core indicators: GDP, GDP per capita, life expectancy and literacy each have 17,290 rows, with 14,577, 14,577, 17,191 and 2,804 reported values.
+- Gold tables in the Power BI model: fact rows equal Silver rows (1,166,575); 280 countries and aggregates (224 countries, 56 aggregates); 84 indicators; 65 years.
+- Silver → Gold in the execution log: 7 table steps and `OPTIMIZE`, all `SUCCESS`. The first Gold build took 116.2 s; a refresh with no changes took 25.9 s.
 
 ## Notes and Limitations
 
@@ -608,18 +636,180 @@ ORDER BY start_time DESC;
 
 ---
 
+# Design Decisions
+
+| # | Decision | Alternatives | Reason |
+|---|---|---|---|
+| D1 | No physical partitions. The fact is clustered by `(indicator_sk, year_key)`, the aggregates by their filter keys, the dimensions are not clustered | Partition by year (65) or by indicator (84); Z-ORDER | About 1.2 million rows is small for Spark, so partitions would create many files of a few MB. Almost every dashboard visual selects one indicator first, then a year range, a group or some countries. Liquid clustering can change its keys later without rewriting the table |
+| D2 | Bronze stores every field as text | Typed Bronze | A changed type in the source (for example `N/A` in a numeric field) must never stop the load. Casting happens in Silver with `try_cast` and bad values are quarantined |
+| D3 | `MERGE` with a different key in every layer | Overwrite or append | Bronze `(batch_id, record_hash)`, Silver `(country_key, indicator_code, year)`, Gold fact on surrogate keys. Re-running data never creates duplicates |
+| D4 | Surrogate keys, a conformed country dimension and SCD type 1 | Business keys in the fact; SCD type 2 | 18 Latin American countries come with ISO3 ids in the LAC Equity Lab indicators and with 2-letter ids elsewhere; in Gold both map to one row (298 Silver keys → 280 members). Only descriptive attributes change, rarely, so history is not needed |
+| D5 | Aggregates use countries only and carry an `is_additive` flag | Aggregate everything | World Bank aggregates such as World or South Asia are already totals; adding them to countries double counts. Values are summed only for additive units, percentages and per-capita values are averaged |
+| D6 | Fact: incremental `MERGE` with a watermark. Aggregates: full rebuild, skipped when inputs did not change | Rebuild all of Gold on every run | Silver only changes a row when its content changed, so the fact only merges changed rows. One revised value changes averages and growth rates of other rows, so aggregates are recomputed as a whole in one atomic commit |
+| D7 | Latest-value table for survey indicators | One fixed year per visual | Literacy has a reported value for only about 16% of country-years, so a ranking or map must use the latest available value |
+| D8 | Databricks Free Edition with serverless compute | Azure for Students | No cost and no cluster management. No cluster settings can be tuned and there is no dollar bill, so FinOps is estimated from measured run times (see [Cost and FinOps](#cost-and-finops-evaluation)) |
+
+## Data-shape incidents on the real source
+
+Besides the simulated drift in the test data, the real source surprised us in these ways:
+
+| Incident | How it was found | Handling |
+|---|---|---|
+| The first 69 indicators had no GDP, life expectancy or literacy | Query on Silver for the headline indicators | 15 core indicators were pulled and loaded through the normal parameters (batch id and source path), with no code change |
+| `EN.ATM.CO2E.PC` returned 0 records | The extraction prints records and non-null values per indicator | Dropped and replaced by `EN.GHG.CO2.PC.CE.AR5` |
+| 9 entities arrive with an empty country id (for example Niue, Tokelau, Anguilla) | Silver key check | Silver key `NAME_<COUNTRY>`; classified in the Gold country dimension |
+| Two id systems for the same country (`AR` and `ARG`) | Gold key mapping check | Conformed country dimension (D4) |
+| Simulated drift: an extra column (`footnote`), `N/A` as a value, `20X5` as a year, missing identifiers | `pipeline_tests`, Test 5 | Extra column kept in `_rescued_data` and loaded; the other records quarantined with the reasons `value_not_numeric`, `invalid_year`, `missing_country` and `missing_indicator_id` |
+
+---
+
+# Spark Execution Analysis
+
+Databricks Free Edition runs on serverless compute, which does not expose the classic Spark UI. The execution DAG is therefore taken from the **Query Profile**, which shows the same Spark plan (scans, joins, exchanges, aggregates) with row counts and timings per operator. Two profiles were exported: the most complex Gold transformation and the star-schema query that serves the dashboard.
+
+## Most complex Gold transformation: `gold_agg_indicator_trends`
+
+Three aggregations (region, income level, world) combined with a union. The profile was captured with a no-op sink (`trend.write.format("noop").mode("overwrite").save()`), which executes the whole plan but writes nothing, so rows written and returned show 0 by design.
+
+| Metric | Value |
+|---|---|
+| Total time | 13,966 ms (compilation 4,923 ms, execution 9,043 ms) |
+| Aggregated task time | 21.77 s, of which 91% in Photon |
+| Rows read | 3,498,117 (14.46 MB); files read 7, files pruned 0 |
+| Rows produced by the union | 53,535 (30,740 + 18,185 + 4,610) |
+| Spill to disk | 0 bytes |
+
+- **Three independent branches.** Each branch scans the fact, so the fact is read three times.
+- **Joins keep about 82% of the fact.** The inner joins with the country and indicator dimensions return about 955,000 of 1,165,826 rows; the second branch sees 217 countries because only countries with an income level qualify.
+- **Three aggregation shuffles.** Partial aggregate, exchange by the grouping keys, final aggregate. The small dimension sides pass through exchanges of 224, 217 and 84 rows.
+- **No file skipping.** The aggregation needs every country-year row, so no predicate can skip files.
+- **Where the time goes.** Joins and aggregates take about 10 to 230 ms per operator. The longest stages (about 4.5 s each) are the scans of the two tiny dimension tables, which points to serverless start-up and file-listing overhead rather than data volume.
+
+**Optimization opportunity.** Reading the fact three times is the main avoidable cost. Computing the three groupings in one pass (for example with `GROUPING SETS`, or by caching the joined DataFrame) would cut the scan work by about two thirds. It was not applied because the transformation takes about 9 s of execution time and the aggregates are rebuilt only when the fact changes; at enterprise scale it would be the first change to make.
+
+## Serving query: star-schema aggregation behind the dashboard
+
+`gold_optimization.ipynb` runs the typical dashboard question (average of one indicator by region and year, 2000–2024, countries only) against the star schema.
+
+- **Scans and pushdown.** The fact scan returns 450,585 of 1,165,826 rows, matching the year predicate (25 of 65 years) applied at the scan. The dimension scans return 1 row (indicator filter) and 224 rows (`entity_type = Country`).
+- **Joins and aggregation.** The two inner joins reduce the fact to 6,620 and then 5,425 rows; a partial aggregate, an exchange of 175 rows and a final aggregate produce the 175 result rows. Total time 1,126 ms (compilation 477 ms, execution 649 ms), 5.04 MB read from cache, no spill.
+- **Finding.** 3 files were read and 0 pruned. Because the indicator filter is applied through the join and not as a literal predicate on `indicator_sk`, the clustering key could not skip files. At 3 files the cost is negligible; at larger volume the pipeline would first resolve `indicator_sk` and filter the fact on it so liquid clustering can prune files.
+
+## How Spark executes the pipeline steps
+
+| Step in the code | Spark concept | What happens |
+|---|---|---|
+| Filter Silver on `load_timestamp` greater than the watermark (fact load) | Predicate pushdown and data skipping | Pushed into the Delta scan, which can skip files whose statistics show no newer rows. On the first load there is no watermark and all rows are read |
+| Join with the country, indicator and alias tables (`F.broadcast`) | Broadcast hash join | Small tables are sent to every task, so the 1.2 million row side is not shuffled |
+| `row_number()` over `(country_sk, indicator_sk, year_key)` | Wide transformation: exchange (shuffle) and sort | The most expensive step of the fact load |
+| `MERGE INTO` the fact on the three keys | Join of source and target, file rewrite | Delta finds the target files that can match and rewrites only those. An incremental run touches few files |
+| `groupBy` region, income level or world with `avg`, `min`, `max`, `percentile_approx` | Partial aggregation, shuffle, final aggregation | The three groupings read the fact three times and are combined with a union |
+| `lag()` over `(country_sk, indicator_sk)` ordered by `year_key` | Window with exchange and sort | One shuffle moves all years of a country and indicator together |
+| `INSERT OVERWRITE` of an aggregate table | Atomic Delta commit | Readers never see a half-built aggregate |
+
+---
+
+# Business Intelligence Dashboard
+
+The dashboard is built in Power BI Desktop (`dashboard/World_bank_dashboard.pbix`). It connects to the Gold tables in `workspace.world_bank` through the Databricks connector (server hostname and HTTP path of a SQL warehouse, authenticated with a personal access token) and stores the data in the file (Import mode, last refreshed 25 October 2026). The model contains the seven Gold tables and the three operational tables (execution logs, quarantine records, revisions).
+
+## Semantic layer
+
+- The Model view reproduces the star schema with **11 many-to-one relationships**, all with single-direction filtering. Each aggregate table and the fact relate to the dimensions on the surrogate keys and to `gold_dim_year` on the year.
+- The relationship from `gold_agg_latest_values` (`latest_year_key`) to `gold_dim_year` is deliberately **inactive**: that table is read as a latest value per country and must not follow the year slicer.
+- A report-level filter keeps aggregates such as World and South Asia out of the country visuals.
+- Trend charts ignore the year slicer, so a single selected year does not collapse a time series to one point.
+
+## Pages
+
+| Page | Question answered | Main visuals |
+|---|---|---|
+| Global Overview | Global context for any indicator and year | KPI cards (total GDP of reporting countries, average life expectancy, average internet use, countries reporting), choropleth map, world average trend |
+| GDP vs Health & Education | How has GDP per capita evolved relative to life expectancy and literacy across regions since 2000? | Scatter plots (GDP per capita vs life expectancy, and vs literacy using the latest available value), regional trend lines from 2000 |
+| Fastest Improvers | Which countries improved education, health and connectivity fastest over the last decade? | Top 10 by average annual growth and by total change, detail table with conditional formatting, indicator and year-range slicers |
+| GDP vs CO2 Emissions | Does GDP correlate with CO₂ emissions differently across income groups? | Scatter coloured by income level, CO₂ trend by income level, average CO₂ by income group |
+| Pipeline Audit & Data Quality | How healthy and complete is the pipeline? | Run and quarantine KPI cards, run time per layer, rows processed per Gold table, latest runs, data coverage by indicator category |
+| Pipeline Tests | Do quarantine, revisions and failure logging work? | Quarantined rows by reason, revisions by change type, failed run (missing source file), step results of the schema-drift batch (from the `world_bank_test` schema) |
+
+On the production data the quarantine and revisions tables are empty (every record passed validation and no value was revised), so their cards show 0. Error handling is demonstrated on the test data.
+
+---
+
+# Cost and FinOps Evaluation
+
+The pipeline was developed on Databricks Free Edition, which does not produce a per-DBU invoice. Compute time below is **measured** from `pipeline_execution_logs`; dollar figures are a **model** that applies published Azure Databricks list prices to that measured time. All prices are assumptions to be checked against the Azure pricing calculator before use.
+
+## Measured run time
+
+| Step (from `pipeline_execution_logs`) | Average duration |
+|---|---|
+| `raw_to_bronze` (per file) | 14.5 s |
+| `bronze_to_silver` (per batch) | 13.6 s |
+| `silver_to_gold` (five Gold steps of the latest refresh, 1.41 to 4.46 s each) | 12.6 s in total |
+| **Typical incremental run** (2 files into Bronze, 1 Silver batch, Gold refresh) | **about 55 s** (2 × 14.5 + 13.6 + 12.6) |
+
+Figures are from the 47 steps logged at the time of writing. The cost model bills 5 minutes per run to include cluster start-up.
+
+## Cost model assumptions
+
+| Assumption | Value |
+|---|---|
+| Jobs Compute (classic, Premium) DBU rate | $0.30 per DBU-hour |
+| Node size | 1 DBU per node-hour, VM about $0.20 per hour; all-in $0.50 per node-hour |
+| Serverless SQL for Power BI refresh | $0.70 per DBU-hour, 2X-Small taken as 4 DBU/h ($2.80 per hour); billed about 5 min per refresh |
+| Storage | $0.02 per GB-month (100 GB at enterprise scale) |
+| Enterprise scale | 100× the data volume; 4 nodes; 15 min run plus 5 min start-up (illustrative, not measured) |
+
+## Annual cost by schedule
+
+| Scenario | Compute | BI refresh | Storage | Total per year |
+|---|---|---|---|---|
+| Project scale, weekly (planned) | $2.17 | – | negligible | $2.17 |
+| Project scale, daily | $15.21 | – | negligible | $15.21 |
+| Project scale, hourly | $365 | – | negligible | $365 |
+| Enterprise scale, hourly pipeline and hourly refresh | $5,840 | $2,044 | $24.00 | $7,908 |
+| Enterprise scale, optimized (daily run and refresh) | $243 | $85.17 | $24.00 | $352 |
+
+These are order-of-magnitude figures (±50%). At this data volume the pipeline itself is cheap; the cost drivers are the schedule and the always-on or frequently started compute, not the data size.
+
+## How the cost would be optimized
+
+- **Match the schedule to the source.** World Bank statistics change annually or quarterly, not hourly. A daily check (or a file-arrival trigger) gives the same freshness and cuts the enterprise cost from about $7,908 to about $352 per year.
+- **Run jobs on Jobs Compute, never All-Purpose** (All-Purpose is roughly 1.8× the Jobs Compute DBU rate).
+- **Avoid start-up cost for short runs** with serverless jobs or a cluster pool.
+- **Use spot instances and autoscaling** for the workers of a larger cluster, and set auto-termination.
+- **Do less work per run (already implemented):** incremental fact merge from a watermark, aggregates rebuilt only when an input changed, `OPTIMIZE` only rewrites unclustered files.
+- **Reduce BI cost:** Import mode with a scheduled refresh, refresh only after the pipeline succeeds, short SQL warehouse auto-stop.
+- **Keep storage lean:** run `VACUUM` on a retention schedule and keep only the current incremental file in the incremental folder.
+
+---
+
+# Limitations and Future Work
+
+- The real incremental files contain the same values as the full load for 2023–2024, so on the real tables they insert and update nothing. Inserts, updates and revisions are demonstrated with the test data.
+- The quarantine and revisions tables are empty on the production data, so the error-handling visuals depend on the test data.
+- Literacy and poverty come from surveys and are reported for only a small share of country-years; analysis uses the latest available value.
+- Seven territories (for example Niue and Anguilla) have no income group in the World Bank country list, and 13 countries have no coordinates, so they are blank in income-level slicers or missing on coordinate-based maps.
+- Averages in the trend table and in the country-average measures are simple averages across countries and are not weighted by population.
+- The dashboard holds an Import-mode snapshot of the Gold tables (25 October 2026); it must be refreshed after a new pipeline run.
+- New source columns are preserved in `_rescued_data` but are not promoted to table columns automatically; promoting one means adding it to the Bronze schema.
+- Dimensions use SCD type 1, so attribute history is not kept. Primary and foreign keys are informational; uniqueness is enforced by the MERGE logic.
+- With the default `batch_id`, running the incremental load on a different day creates a new Bronze batch; Silver is not affected. Bronze keeps one copy of a record per batch.
+- The execution log is an audit trail and is never cleaned. It can contain earlier test runs that FAILED or were cancelled; those committed no data.
+
 ---
 
 ## Security & Compliance
 
-No PII is present in this dataset. All records are country-and-year level aggregates published by national statistical agencies. No individual-level data exists at any stage of the pipeline.
+No PII is present in this dataset. Every record is a country-level (or regional) statistic for one indicator and one year, published by national statistical agencies and international organisations. The fields reviewed are the indicator and country id and name, ISO3 code, year, value, unit, observation status and decimal precision; the Gold country dimension adds region, income group, capital city and coordinates, which describe countries and not people. No hashing, masking or column dropping is required. The only secret in the project is the Databricks personal access token used by Power BI; it is stored in the Power BI credentials and never in the repository.
 
 ## Tech Stack
 
-- **Processing**: Apache Spark (Databricks Free Edition)
-- **Storage**: Delta Lake
+- **Processing**: Apache Spark (Databricks Free Edition, serverless compute)
+- **Storage**: Delta Lake, Unity Catalog
 - **Language**: Python / PySpark / Spark SQL
-- **BI Tool**: Power BI
+- **BI Tool**: Power BI Desktop (Databricks connector, Import mode)
+- **Version control**: GitHub; work done on feature branches (`anoushay-dev`, `ahmed-dev`) merged into `main` through pull requests
 
 ## Team
 
@@ -628,4 +818,4 @@ No PII is present in this dataset. All records are country-and-year level aggreg
 
 ## Course
 
-Data Analysis and Visualization
+Data Analysis and Visualization · Instructor: Sir Amir Iqbal
